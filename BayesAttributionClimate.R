@@ -1,5 +1,6 @@
 ## ===========================
 ## QJRMS Paper - Bayesian verification of climate trends
+## Jason West - Bureau of Meteorology
 ## Bayesian trends + pooled posterior + optional verification
 ## ===========================
 
@@ -80,6 +81,67 @@ ols_slope_p <- function(x, y) {
 
 # Decimal years since a base date
 year_frac <- function(d, base) as.numeric(d - base) / 365.25
+
+#### ------ ETGS SCORING FUNCTION
+
+etgs_score <- function(draws_list, y, u, beta = 1, lambda = 0.5) {
+  T <- length(draws_list)
+  
+  scores <- numeric(T)
+  kappa_prev <- NA
+  
+  for (t in 1:T) {
+    draws <- draws_list[[t]]
+    
+    # density estimate for log score
+    
+    f_y <- tryCatch({
+      dens <- density(draws, n = 512)
+      approx(dens$x, dens$y, xout = y[t], rule = 2)$y
+    }, error = function(e) NA)
+    
+    if (is.na(f_y) || f_y <= 0) f_y <- 1e-12
+    
+    
+    log_score <- -log(f_y + 1e-12)
+    
+    # exceedances
+    z_draws <- draws - u[t]
+    tail <- z_draws[z_draws > 0]
+    
+    if (length(tail) > 10) {
+      mu <- mean(tail)
+      var <- var(tail)
+      
+      z_obs <- y[t] - u[t]
+      
+      tail_score <- abs(mu - z_obs) + abs(var - (z_obs - mu)^2)
+      tail_score <- pmin(tail_score, 1e3)
+      
+      # shape proxy: kurtosis
+      kappa <- ifelse(length(tail) > 3,
+                      mean((tail - mu)^4) / (var^2 + 1e-8),
+                      NA)
+    } else {
+      tail_score <- 0
+      kappa <- NA
+    }
+    
+    # evolution penalty
+    if (!is.na(kappa_prev) & !is.na(kappa)) {
+      evo <- abs(kappa - kappa_prev)
+    } else {
+      evo <- 0
+    }
+    
+    scores[t] <- log_score + beta * tail_score + lambda * evo
+    
+    kappa_prev <- kappa
+  }
+  
+  return(mean(scores, na.rm = TRUE))
+}
+
 
 ############################################
 ## ---- 0) Stylised diagrams ----
@@ -195,9 +257,14 @@ aus <- ne_countries(
 
 temp_stations <- tibble(
   station = c("Darwin", "Alice Springs", "Oodnadatta",
-              "Sydney", "Melbourne", "Brisbane", "Perth"),
-  lon = c(130.85, 133.88, 135.45, 151.21, 144.96, 153.03, 115.86),
-  lat = c(-12.46, -23.70, -27.55, -33.87, -37.81, -27.47, -31.95),
+              "Sydney", "Melbourne", "Brisbane", "Perth",
+              "Birdsville", "Canberra"),
+  lon = c(130.85, 133.88, 135.45,
+          151.21, 144.96, 153.03, 115.86,
+          139.35, 149.13),
+  lat = c(-12.46, -23.70, -27.55,
+          -33.87, -37.81, -27.47, -31.95,
+          -25.90, -35.28),
   type = "Temperature"
 )
 
@@ -267,7 +334,8 @@ p_map +
       filter(station %in% c("Sydney", "Darwin",
                             "Newcastle", "Eden", "Broome",
                             "Brisbane", "Port Pirie", "Alice Springs", 
-                            "Oodnadatta","Melbourne","Perth")),
+                            "Oodnadatta","Melbourne","Perth","Mildura",
+                            "Birdsville","Canberra")),
     aes(label = station),
     size = 3,
     nudge_y = 0.8
@@ -275,7 +343,6 @@ p_map +
 
 ##########################################
 ## ---- 1) Load data ----
-setwd("C:/Users/jwest.INTERNAL/OneDrive - Bureau of Meteorology/Documents/Data/Sea Levels")
 f <- "MSL_Raw_Month.csv"
 dat <- read.csv(f, check.names = FALSE)
 names(dat)[1] <- "Date"
@@ -318,12 +385,12 @@ analyze_window <- function(start_date, end_date, min_months = 60, seed = 123) {
   do.call(rbind, res$rows)
 }
 
-# Run both windows (as in the manuscript)
+# Run both windows
 res_2012 <- analyze_window("2012-01-01", "2022-12-31", min_months = 60, seed = 123)
 res_2015 <- analyze_window("2015-01-01", "2024-12-31", min_months = 48, seed = 124)
 
-write.csv(res_2012, "table_S1_sea_level_trends_2012_2022.csv", row.names = FALSE)
-write.csv(res_2015, "table_S1b_sea_level_trends_2015_2024.csv", row.names = FALSE)
+#write.csv(res_2012, "table_S1_sea_level_trends_2012_2022.csv", row.names = FALSE)
+#write.csv(res_2015, "table_S1b_sea_level_trends_2015_2024.csv", row.names = FALSE)
 
 ## ---- 3) Random-effects pooled posterior (meta-analytic) + shrinkage ----
 pooled_random_effects <- function(df) {
@@ -355,8 +422,7 @@ if (!is.null(pool)) {
               1 - pnorm(0, mean = pool$mu, sd = pool$sd)))
 }
 
-## ---- 4) Figures (base plotting; save to PNG) ----
-#png("fig_S1_station_examples.png", width = 1000, height = 700)
+## ---- 4) Figures ----
 par(mfrow = c(2,2), mar = c(4,4,3,1))
 example_stations <- intersect(c("Sydney (Fort Denison)","Darwin","Newcastle","Eden"), stations)
 W <- subset(dat, Date >= as.Date("2012-01-01") & Date <= as.Date("2022-12-31"))
@@ -392,7 +458,8 @@ for (st in example_stations) {
          labels = sprintf("P(slope>0)=%.2f", ppos), adj = c(0,1), cex = 0.9)
   }
 }
-#dev.off()
+
+par(mfrow = c(1,1))
 
 # Fig S2: regional pooled posterior (normal approx)
 if (!is.null(pool)) {
@@ -412,8 +479,8 @@ if (!is.null(pool)) {
                  pool$mu, pool$mu - 1.96*pool$sd, pool$mu + 1.96*pool$sd,
                  1 - pnorm(0, mean = pool$mu, sd = pool$sd))
   mtext(txt, side = 3, adj = 0.02, cex = 0.9)
-  #dev.off()
 }
+
 
 #Improve Figure S2:
 # Fig S2: Regional pooled posterior (Normal approximation)
@@ -524,14 +591,7 @@ hist(res_2015$Bayes_Ppos,
 abline(v = 0.5, lty = 2, lwd = 2, col = "grey30")
 abline(v = 0.9, lty = 3, col = "grey40")
 
-
-# #png("fig_S3_window_sensitivity.png", width = 1000, height = 450)
-# par(mfrow = c(1,2), mar = c(4,4,3,1))
-# hist(res_2012$Bayes_Ppos, breaks = seq(0.5,1.0,by=0.02), col = "steelblue",
-#      main = "P(slope>0) across stations\n2012–2022", xlab = "Posterior probability")
-# hist(res_2015$Bayes_Ppos, breaks = seq(0.5,1.0,by=0.02), col = "seagreen",
-#      main = "P(slope>0) across stations\n2015–2024", xlab = "Posterior probability")
-# #dev.off()
+par(mfrow = c(1,1))
 
 # Fig S4: hierarchical shrinkage scatter
 if (!is.null(pool)) {
@@ -551,7 +611,6 @@ if (!is.null(pool)) {
     i <- which(d$Station == st)[1]
     text(d$Bayes_mean[i], d$beta_shrunk[i], labels = sub("\\(.*","",st), pos = 4, cex=0.8)
   }
-#  dev.off()
 }
 
 # Re-run the analysis to produce a better figure
@@ -615,7 +674,7 @@ legend(
 )
 
 
-## ---- 5) OPTIONAL: Posterior-predictive verification with proper scores ----
+## ---- 5) Posterior-predictive verification with proper scores ----
 ## Rolling-origin one-step-ahead for a single station (extend to all stations):
 verify_station <- function(st, start_date="2012-01-01", end_date="2022-12-31",
                            warm_up_months = 24) {
@@ -653,7 +712,7 @@ verify_station <- function(st, start_date="2012-01-01", end_date="2022-12-31",
   out
 }
 
-# Example verification for Sydney; loop for others if desired
+# Example verification for Sydney
 ver_syd <- verify_station("Sydney (Fort Denison)")
 # Aggregate verification metrics
 with(subset(ver_syd, is.finite(CRPS) & is.finite(CRPS_base)), {
@@ -663,7 +722,226 @@ with(subset(ver_syd, is.finite(CRPS) & is.finite(CRPS_base)), {
   cat(sprintf("Sydney mean logS gain (model - baseline): %.4f\n",
               mean(logS - logS_base, na.rm=TRUE)))
 })
-# Can also inspect histogram(ver_syd$PIT, breaks=20) for calibration.
+
+############################################
+#### EGTS Scoring Function ##############################
+
+verify_station_ETGS <- function(st, start_date="2012-01-01", end_date="2022-12-31",
+                                warm_up_months = 24) {
+  W <- subset(dat, Date >= as.Date(start_date) & Date <= as.Date(end_date))
+  base <- as.Date(start_date)
+  t_years <- year_frac(W$Date, base)
+  y <- W[[st]]
+  n <- length(y)
+  
+  draws_list <- vector("list", n)
+  
+  for (k in seq_len(n)) {
+    if (k <= warm_up_months || sum(is.finite(y[1:(k-1)])) < 24) next
+    
+    x_tr <- t_years[1:(k-1)]
+    y_tr <- y[1:(k-1)]
+    
+    fitA <- bayes_reg_conjugate(x_tr, y_tr, x_new = t_years[k], draws = 20000, seed = 99+k)
+    
+    if (!is.null(fitA) && is.finite(y[k])) {
+      # Key Function      
+      drawsA <- rnorm(500, mean = fitA$pred_mu, sd = fitA$pred_sig)
+      draws_list[[k]] <- drawsA
+    }
+  }
+  
+  return(list(y = y, draws_list = draws_list, Date = W$Date))
+}
+
+u <- zoo::rollapply(y, 60, quantile, probs = 0.9, fill = NA, align = "right")
+
+# Step 1: generate ETGS inputs
+res <- verify_station_ETGS("Sydney (Fort Denison)")
+
+y <- res$y
+draws_list <- res$draws_list
+
+# Step 2: compute threshold
+u <- zoo::rollapply(y, 60, quantile, probs=0.9, fill=NA, align="right")
+
+# Step 3: compute ETGS
+etgs <- etgs_score(draws_list, y, u)
+
+print(etgs)
+
+# Baseline climatology
+fitB <- bayes_reg_conjugate(rep(0, length(x_tr)), y_tr, x_new = 0)
+drawsB <- rnorm(500, mean = fitB$pred_mu, sd = fitB$pred_sig)
+
+etgs_A <- etgs_score(draws_list_A, y, u)
+etgs_B <- etgs_score(draws_list_B, y, u)
+
+etgs_A - etgs_B
+
+#### ---------- Full Scoring Function ----------  
+##### Amended EGTS Scoring Function that include both models
+### site and climatology
+validate_station_ETGS_compare <- function(st, start_date="2012-01-01", end_date="2022-12-31",
+                                          warm_up_months = 24) {
+  
+  W <- subset(dat, Date >= as.Date(start_date) & Date <= as.Date(end_date))
+  base <- as.Date(start_date)
+  t_years <- year_frac(W$Date, base)
+  y <- W[[st]]
+  n <- length(y)
+  
+  # storage
+  draws_list_A <- vector("list", n)  # trend model
+  draws_list_B <- vector("list", n)  # baseline model
+  
+  for (k in seq_len(n)) {
+    
+    if (k <= warm_up_months || sum(is.finite(y[1:(k-1)])) < 24) next
+    
+    # training data
+    x_tr <- t_years[1:(k-1)]
+    y_tr <- y[1:(k-1)]
+    
+    # ======================
+    # Model A: trend model
+    # ======================
+    fitA <- bayes_reg_conjugate(x_tr, y_tr, x_new = t_years[k],
+                                draws = 20000, seed = 99+k)
+    
+    # ======================
+    # Model B: baseline model
+    # ======================
+    fitB <- bayes_reg_conjugate(rep(0, length(x_tr)), y_tr, x_new = 0,
+                                draws = 20000, seed = 77+k)
+    
+    if (!is.null(fitA) && !is.null(fitB) && is.finite(y[k])) {
+      
+      # generate predictive draws
+      drawsA <- rnorm(500, mean = fitA$pred_mu, sd = fitA$pred_sig)
+      drawsB <- rnorm(500, mean = fitB$pred_mu, sd = fitB$pred_sig)
+      
+      draws_list_A[[k]] <- drawsA
+      draws_list_B[[k]] <- drawsB
+    }
+  }
+  
+  return(list(
+    y = y,
+    Date = W$Date,
+    draws_A = draws_list_A,
+    draws_B = draws_list_B
+  ))
+}
+
+res <- validate_station_ETGS_compare("Sydney (Fort Denison)")
+
+y <- res$y
+draws_A <- res$draws_A
+draws_B <- res$draws_B
+
+# threshold (prequential)
+u <- zoo::rollapply(y, 60, quantile, probs = 0.9, fill = NA, align = "right")
+
+# compute ETGS
+etgs_A <- etgs_score(draws_A, y, u)
+etgs_B <- etgs_score(draws_B, y, u)
+
+etgs_A - etgs_B
+
+summary(sapply(draws_A, length))
+summary(sapply(draws_B, length))
+
+# For all stations - loop
+library(zoo)
+
+compute_etgs_all_stations <- function(stations_vec) {
+  
+  results <- list()
+  
+  for (st in stations_vec) {
+    
+    cat("Processing:", st, "\n")
+    
+    # get draws
+    res <- validate_station_ETGS_compare(st)
+    
+    y <- res$y
+    draws_A <- res$draws_A
+    draws_B <- res$draws_B
+    
+    # skip if insufficient data
+    if (sum(is.finite(y)) < 60) next
+    
+    # threshold (prequential rolling 90th percentile)
+    u <- zoo::rollapply(y, 60, quantile, probs=0.9, na.rm=TRUE,
+                        fill=NA, align="right")
+    
+    # compute ETGS
+    etgs_A <- etgs_score(draws_A, y, u)
+    etgs_B <- etgs_score(draws_B, y, u)
+    
+    diff <- etgs_A - etgs_B
+    
+    results[[st]] <- data.frame(
+      Station = st,
+      ETGS_model = etgs_A,
+      ETGS_baseline = etgs_B,
+      ETGS_diff = diff
+    )
+  }
+  
+  do.call(rbind, results)
+}
+
+# Run the looped function
+etgs_table <- compute_etgs_all_stations(stations)
+
+# View
+print(etgs_table)
+
+# Round and format
+etgs_table_clean <- etgs_table
+
+etgs_table_clean$ETGS_model    <- round(etgs_table$ETGS_model, 3)
+etgs_table_clean$ETGS_baseline <- round(etgs_table$ETGS_baseline, 3)
+etgs_table_clean$ETGS_diff     <- round(etgs_table$ETGS_diff, 3)
+
+# Sort by improvement (best at top)
+etgs_table_clean <- etgs_table_clean[order(etgs_table_clean$ETGS_diff), ]
+
+# Print
+print(etgs_table_clean)
+
+write.csv(etgs_table_clean, "ETGS_results_table.csv", row.names = FALSE)
+
+mean(etgs_table$ETGS_diff, na.rm=TRUE)
+median(etgs_table$ETGS_diff, na.rm=TRUE)
+sum(etgs_table$ETGS_diff < 0, na.rm=TRUE)
+
+library(dplyr)
+
+etgs_table_clean <- etgs_table %>%
+  mutate(
+    ETGS_model    = round(ETGS_model, 3),
+    ETGS_baseline = round(ETGS_baseline, 3),
+    ETGS_diff     = round(ETGS_diff, 3),
+    Interpretation = ifelse(
+      ETGS_diff < 0,
+      "Improved tail structure",
+      "No improvement"
+    )
+  ) %>%
+  arrange(ETGS_diff)
+
+# Export
+write.csv(etgs_table_clean, "Table_ETGS_results.csv", row.names = FALSE)
+
+etgs_table_clean
+
+
+
+# Can inspect histogram(ver_syd$PIT, breaks=20) for calibration.
 
 #####################################################################
 #### TEMPERATURE CASE STUDY
@@ -682,17 +960,15 @@ core_stations <- c(
   "CAIRNS", "BROOME", "MILDURA AIRPORT", "BIRDSVILLE AIRPORT"
 )
 
-# --- LOAD DAILY TEMPS ---------------------------------------------------------
+# --- LOAD PACKAGES ---------------------------------------------------------
 library(data.table); library(dplyr); library(lubridate); library(readr); library(janitor)
 library(rstanarm); library(tidyverse); library(scoringRules); library(posterior); library(rstan)
 
+# --- LOAD DAILY TEMPS ---------------------------------------------------------
 options(mc.cores = parallel::detectCores())
 rstan_options(auto_write = TRUE)
 
-setwd("C:/Users/jwest.INTERNAL/OneDrive - Bureau of Meteorology/Documents/Data/Climate/Attribution/Bayesian Verification")
-
 dt <- fread("tempdat.csv", select = c("Date","Stname","TMax","Tmin"))    # daily format & columns
-# (file metadata and structure as per user-provided tempdat.csv)              # [1](https://bom365-my.sharepoint.com/personal/jason_west_bom_gov_au/_layouts/15/Doc.aspx?sourcedoc=%7BAAC08CC3-790A-4F0E-9A8A-662B514B8C37%7D&file=tempdat.csv&action=default&mobileredirect=true)
 dt[, Date := as.Date(Date)]
 dt[, Year := year(Date)]
 dt[, Month := month(Date)]
@@ -709,11 +985,11 @@ tx_monthly <- dt[!is.na(TMax),
 
 # --- LOAD AND PREPARE INDICES (incl. SAM wide->long) -------------------------
 enso <- read_csv("enso_anom_mthly.csv", show_col_types = FALSE) %>%
-  transmute(Year, Month, ENSO = stANOM)                                   # [1](https://bom365-my.sharepoint.com/personal/jason_west_bom_gov_au/_layouts/15/Doc.aspx?sourcedoc=%7BAAC08CC3-790A-4F0E-9A8A-662B514B8C37%7D&file=tempdat.csv&action=default&mobileredirect=true)
+  transmute(Year, Month, ENSO = stANOM)                                   
 iod  <- read_csv("iod.csv", show_col_types = FALSE) %>%
-  transmute(Year, Month, IOD = iod)                                       # [2](https://bom365-my.sharepoint.com/personal/jason_west_bom_gov_au/_layouts/15/Doc.aspx?sourcedoc=%7BC9D8713A-436F-4E14-B666-F82F8D7EDE46%7D&file=Bayesian%20Verification%20Changing%20Climate%20v2.docx&action=default&mobileredirect=true)
+  transmute(Year, Month, IOD = iod)                                     
 sst  <- read_csv("nAusSST.csv", show_col_types = FALSE) %>%
-  transmute(Year, Month, nAusSST)                                         # [3](https://bom365-my.sharepoint.com/personal/jason_west_bom_gov_au/_layouts/15/Doc.aspx?sourcedoc=%7B3CD9E7E6-04AA-45E4-8038-1E5A1FA13B3C%7D&file=SAM_wd.csv&action=default&mobileredirect=true)
+  transmute(Year, Month, nAusSST)                                        
 
 sam <- read_csv("SAM.csv",show_col_types = FALSE) %>%
   pivot_longer(
@@ -756,20 +1032,17 @@ dat <- dat %>%
     date = as.Date(date)
   )
 
-# Next steps: fit baseline & regime-aware BAYES models and run rolling-origin
-# scoring (CRPS/logS) exactly as in Section 3 workflow 
+# Fit baseline & regime-aware BAYES models and run rolling-origin
+# scoring (CRPS/logS) as in Section 3 workflow 
 
-# write.csv(dat,"C:/Users/jwest.INTERNAL/OneDrive - Bureau of Meteorology/Documents/Data/Climate/Attribution/Bayesian Verification/dat.csv")
-# Factorise
-
-# --- 2.1 Baseline (trend + seasonality, no regimes) -------------------------------------
+# --- Baseline (trend + seasonality, no regimes) -------------------------------------
 # Bayesian climatology‑plus‑trend reference
 
 form_base <- Txx ~
   t + s1 + c1 + s2 + c2 + 
   (1 | station_id) 
 
-# --- 2.2 Regime‑aware model (hierarchical teleconnections) ------------------------------
+# --- Regime‑aware model (hierarchical teleconnections) ------------------------------
 # Physically motivated alternative.
 
 form_regime <- Txx ~
@@ -777,8 +1050,7 @@ form_regime <- Txx ~
   ENSO_z + IOD_z + SAM_z + SST_z +
   (1 + ENSO_z + IOD_z + SAM_z + SST_z | station_id)
 
-# --- 3. Prequential (rolling‑origin) verification -------------------------------------
-# Non‑negotiable for this paper
+# --- Prequential (rolling‑origin) verification -------------------------------------
 issue_dates <- sort(unique(dat$date))
 issue_dates <- issue_dates[seq(1, length(issue_dates), by = 2)] # sample every second month
 min_train   <- 120   # e.g. 10 years
@@ -796,17 +1068,17 @@ for (i in seq(min_train + 1, length(issue_dates))) {
   fit_base <- stan_glmer(
     form_base,
     data   = train_dat,
-    family = gaussian(),  # ✅ FIXED
+    family = gaussian(),
     prior_intercept = normal(0, 5),
     prior = normal(0, 1),
-    prior_aux = student_t(3, 0, 5),  # ✅ robust variance
+    prior_aux = student_t(3, 0, 5),
     chains = 2, iter = 1000, refresh = 0
   )
   
   fit_regime <- stan_glmer(
     form_regime,
     data   = train_dat,
-    family = gaussian(),  # ✅ FIXED
+    family = gaussian(),
     prior_intercept = normal(0, 5),
     prior = normal(0, 1),
     prior_aux = student_t(3, 0, 5),
@@ -842,7 +1114,91 @@ for (i in seq(min_train + 1, length(issue_dates))) {
 # proper scores
 # station‑wise and time‑wise results
 scores <- bind_rows(score_store)
-# write.csv(scores,"C:/Users/jwest.INTERNAL/OneDrive - Bureau of Meteorology/Documents/Research/Papers/Bayesian Beliefs/Climate Attribution QJMS/score.csv")
+# write.csv(scores,"score.csv")
+
+
+####################################################
+## FST LOOP ALTERNATIVE FOR ETGS SCORING
+####
+issue_dates <- sort(unique(dat$date))
+issue_dates <- issue_dates[seq(1, length(issue_dates), by = 4)] # sample every month
+min_train   <- 60   # e.g. XX years
+
+score_store <- list()
+etgs_store <- list()
+
+for (i in seq(min_train + 1, length(issue_dates))) {
+  
+  train_date  <- issue_dates[i - 1]
+  verify_date <- issue_dates[i]
+  
+  train_dat <- dat %>% filter(date <= train_date)
+  test_dat  <- dat %>% filter(date == verify_date)
+  
+  fit_base <- stan_glmer(
+    form_base,
+    data   = train_dat,
+    family = gaussian(),
+    prior_intercept = normal(0, 5),
+    prior = normal(0, 1),
+    prior_aux = student_t(3, 0, 5),
+    chains = 2, iter = 400, refresh = 0
+  )
+  
+  fit_regime <- stan_glmer(
+    form_regime,
+    data   = train_dat,
+    family = gaussian(),
+    prior_intercept = normal(0, 5),
+    prior = normal(0, 1),
+    prior_aux = student_t(3, 0, 5),
+    chains = 2, iter = 400, refresh = 0
+  )
+  pp_base   <- posterior_predict(fit_base, newdata = test_dat)
+  pp_regime <- posterior_predict(fit_regime, newdata = test_dat)
+  
+  for (j in seq_len(nrow(test_dat))) {
+    
+    y <- test_dat$Txx[j]
+    st_id <- as.character(test_dat$station_id[j])
+    
+    # Store ETGS inputs
+    etgs_store[[length(etgs_store) + 1]] <- tibble(
+      date = verify_date,
+      station_id = st_id,
+      y = y_val,
+      draws_base = list(pp_base[, j]),
+      draws_regime = list(pp_regime[, j])
+    )
+    
+    score_store[[length(score_store) + 1]] <- tibble(
+      date = verify_date,
+      station_id = test_dat$station_id[j],
+      model = "Baseline",
+      crps = crps_sample(y, pp_base[, j]),
+      logS = logs_sample(y, pp_base[, j])
+    )
+    
+    score_store[[length(score_store) + 1]] <- tibble(
+      date = verify_date,
+      station_id = test_dat$station_id[j],
+      model = "Regime",
+      crps = crps_sample(y, pp_regime[, j]),
+      logS = logs_sample(y, pp_regime[, j])
+    )
+  }
+}
+
+# posterior predictive distributions
+# proper scores
+# station‑wise and time‑wise results
+scores <- bind_rows(score_store)
+etgs_data <- bind_rows(etgs_store)
+nrow(etgs_data)
+# etgs_data %>%
+#   group_by(station_id) %>%
+#   summarise(n = n())
+
 
 # --- 4. Bayes‑factor evidence on the predictive scale ----------------------------------
 bf_time <- scores %>%
@@ -1183,9 +1539,257 @@ fig5 <- ggplot(
 
 fig5
 
-# Why this method is correct
-# posterior_epred() captures parameter uncertainty
-# sigma captures irreducible observation noise
-# Summing variances is correct for Normal mixtures
-# CRPS and PIT have closed‑form expressions
-# No look‑ahead or leakage is introduced
+
+
+#etgs_store <- list()
+
+# for (i in seq(min_train + 1, length(issue_dates))) {
+#   
+#   y_val <- test_dat$Txx[j]
+#   st_id <- as.character(test_dat$station_id[j])
+#   
+#   # Store full predictive draws (KEY CHANGE)
+#   etgs_store[[length(etgs_store) + 1]] <- tibble(
+#     date = verify_date,
+#     station_id = st_id,
+#     y = y_val,
+#     draws_base = list(pp_base[, j]),
+#     draws_regime = list(pp_regime[, j])
+#   )
+# }
+
+# etgs_data <- bind_rows(etgs_store)
+# nrow(etgs_data)
+
+
+#########################################################
+### ETGS Scoring Function - adapted to Temperature
+
+compute_etgs_station_temp <- function(df_station) {
+  
+  y <- df_station$y
+  
+  draws_A <- df_station$draws_regime
+  draws_B <- df_station$draws_base
+  
+  # robust threshold (global 90th percentile)
+  u_val <- quantile(y, 0.9, na.rm = TRUE)
+  u <- rep(u_val, length(y))
+  
+  # compute ETGS
+  etgs_A <- etgs_score(draws_A, y, u)
+  etgs_B <- etgs_score(draws_B, y, u)
+  
+  data.frame(
+    ETGS_model = etgs_A,
+    ETGS_baseline = etgs_B,
+    ETGS_diff = etgs_A - etgs_B
+  )
+}
+
+### Apply across all stations
+# Multi-station table
+compute_etgs_all_temp <- function(etgs_data) {
+  
+  stations <- unique(etgs_data$station_id)
+  
+  results <- list()
+  
+  for (st in stations) {
+    
+    cat("Processing:", st, "\n")
+    
+    df_st <- etgs_data %>%
+      filter(station_id == st) %>%
+      arrange(date)
+    
+    if (sum(is.finite(df_st$y)) < 25) next
+    
+    res <- compute_etgs_station_temp(df_st)
+    
+    results[[st]] <- data.frame(
+      Station = st,
+      ETGS_model = res$ETGS_model,
+      ETGS_baseline = res$ETGS_baseline,
+      ETGS_diff = res$ETGS_diff
+    )
+  }
+  
+  do.call(rbind, results)
+}
+
+# Run function
+etgs_temp_table <- compute_etgs_all_temp(etgs_data)
+print(etgs_temp_table)
+write.csv(etgs_temp_table,"etgs_temp_table.csv")
+mean(etgs_temp_table$ETGS_diff)
+median(etgs_temp_table$ETGS_diff)
+sum(etgs_temp_table$ETGS_diff > 0)
+getwd()
+
+### PRODUCE FINAL FIGURE TO DEMONSTRATE DIFF
+library(dplyr)
+library(ggplot2)
+
+# Compute CRPS differences
+crps_summary <- scores %>%
+  group_by(station_id, model) %>%
+  summarise(crps = mean(crps), .groups = "drop") %>%
+  tidyr::pivot_wider(names_from = model, values_from = crps) %>%
+  mutate(CRPS_diff = Baseline - Regime)  # positive = improvement
+
+# Merge with ETGS
+plot_data <- etgs_temp_table %>%
+  rename(station_id = Station) %>%
+  left_join(crps_summary, by = "station_id")
+
+plot_data$station_id <- gsub(" AIRPORT$", "", plot_data$station_id) # remove "AIRPORT"
+
+# Plot
+ggplot(plot_data, aes(x = CRPS_diff, y = ETGS_diff, label = station_id)) +
+  geom_point(size = 3, colour = "firebrick") +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  geom_text(nudge_x = 0.002, nudge_y = 0.1, size = 3) +
+  labs(
+    title = "Predictive Skill vs Tail Structure in Regime-Aware Models",
+    x = "CRPS improvement (Baseline − Regime)",
+    y = "ETGS difference (Regime − Baseline)"
+  ) +
+  theme_bw()
+
+# Dot plot (not included in paper)
+ggplot(plot_data, aes(x = reorder(station_id, ETGS_diff))) +
+  geom_point(aes(y = CRPS_diff, colour = "CRPS")) +
+  geom_point(aes(y = ETGS_diff, colour = "ETGS")) +
+  coord_flip()
+
+#######################################################
+#### SUPPLEMENTARY CODE
+
+library(dplyr)
+library(scoringRules)
+library(ggplot2)
+
+set.seed(123)
+n <- 300
+
+# 1. Generate baseline data
+# baseline stationary process
+y_base <- rnorm(n, mean = 0, sd = 1)
+
+# 2. Define shift scenarios
+# Mean shift
+y_mean_shift <- c(rnorm(n/2, 0, 1),
+                  rnorm(n/2, 1.5, 1))
+# Variance shift
+y_var_shift <- c(rnorm(n/2, 0, 1),
+                 rnorm(n/2, 0, 2))
+
+# Tail shift (switch to heavy-tailed)
+y_tail_shift <- c(rnorm(n/2, 0, 1),
+                  rt(n/2, df = 3))
+
+# 3. Prequential scoring function
+prequential_scores <- function(y) {
+  
+  n <- length(y)
+  logS_base <- numeric(n)
+  logS_adapt <- numeric(n)
+  
+  for (t in 20:(n-1)) {
+    
+    train <- y[1:(t-1)]
+    
+    # Baseline model: fixed mean/var (early window)
+    base_mean <- mean(y[1:20])
+    base_sd   <- sd(y[1:20])
+    
+    # Adaptive model: rolling estimate
+    adapt_mean <- mean(train)
+    adapt_sd   <- sd(train)
+    
+    # Log scores
+    logS_base[t]  <- dnorm(y[t], base_mean, base_sd, log = TRUE)
+    logS_adapt[t] <- dnorm(y[t], adapt_mean, adapt_sd, log = TRUE)
+  }
+  
+  tibble(
+    t = 1:n,
+    logS_base = logS_base,
+    logS_adapt = logS_adapt,
+    logBF = cumsum(logS_adapt - logS_base)
+  )
+}
+
+# 4. Run experiments
+res_mean <- prequential_scores(y_mean_shift)
+res_var  <- prequential_scores(y_var_shift)
+res_tail <- prequential_scores(y_tail_shift)
+
+# 5. Plot Bayes factor evolution
+res_mean$scenario <- "Mean shift"
+res_var$scenario  <- "Variance shift"
+res_tail$scenario <- "Tail shift"
+
+all_res <- bind_rows(res_mean, res_var, res_tail)
+
+ggplot(all_res %>% filter(t > 30),
+       aes(x = t, y = logBF, colour = scenario)) +
+  geom_line(lwd = 1) +
+  labs(
+    title = "Predictive Bayes Factors under Synthetic Shifts",
+    x = "Time",
+    y = "Cumulative log Bayes Factor (Adaptive vs Baseline)"
+  ) +
+  theme_bw()
+
+# 6. Add CRPS comparison
+compute_crps <- function(y) {
+  
+  n <- length(y)
+  crps_base <- numeric(n)
+  crps_adapt <- numeric(n)
+  
+  for (t in 20:(n-1)) {
+    
+    train <- y[1:(t-1)]
+    
+    base_mean <- mean(y[1:20])
+    base_sd   <- sd(y[1:20])
+    
+    adapt_mean <- mean(train)
+    adapt_sd   <- sd(train)
+    
+    crps_base[t]  <- crps_norm(y[t], base_mean, base_sd)
+    crps_adapt[t] <- crps_norm(y[t], adapt_mean, adapt_sd)
+  }
+  
+  mean(crps_base - crps_adapt, na.rm = TRUE)
+}
+
+data.frame(
+  scenario = c("Mean shift", "Variance shift", "Tail shift"),
+  CRPS_improvement = c(
+    compute_crps(y_mean_shift),
+    compute_crps(y_var_shift),
+    compute_crps(y_tail_shift)
+  )
+)
+
+# 7. Tail shift diagnostic (ETGS-style proxy)
+tail_mean <- function(x, u = quantile(x, 0.9)) {
+  mean(x[x > u], na.rm = TRUE)
+}
+
+compare_tail <- function(y) {
+  c(
+    baseline = tail_mean(y[1:(n/2)]),
+    shifted  = tail_mean(y[(n/2+1):n])
+  )
+}
+
+compare_tail(y_tail_shift)
+
+### end ###
+
