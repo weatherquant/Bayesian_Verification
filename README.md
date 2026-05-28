@@ -1,26 +1,19 @@
-Rapid climate change challenges the stationarity assumptions underlying many conventional forecast verification practices, 
-particularly those based on fixed climatologies and null‑hypothesis significance testing.
+Rapid climate change challenges the stationarity assumptions underlying conventional forecast verification. 
 
-We present a Bayesian verification framework for non‑stationary forecast systems that treats forecasts as evolving predictive 
-distributions and evaluates them using strictly proper scoring rules applied to posterior predictives.
+We present a Bayesian verification framework for nonstationary forecast systems that treats forecasts as posterior predictive distributions and evaluates them using strictly proper scoring rules in a prequential setting. 
 
-The framework supports coherent uncertainty quantification, tail‑aware diagnostics, and evidence‑based comparison through 
-predictive Bayes factors.
+The approach integrates predictive Bayes factors and Information-Noise diagnostics to provide coherent, decision relevant evaluation under distributional drift. 
 
-Using prequential verification, we compare Bayesian and frequentist approaches in two applications: short‑window Australian 
-sea‑level anomalies (2012-2022) and monthly temperature extremes.
+While the individual components of this framework are established, their integration provides a unified workflow for inference and verification in evolving climates. 
 
-In both synthetic shift experiments and observational case studies, Bayesian posterior‑predictive verification maintains 
-calibration and resolution under distributional drift, whereas classical methods degrade in short, noisy samples.
+We further introduce the Evolving Tail Geometry Score (ETGS), which complements existing proper scores by evaluating the structural representation of extremes, including the magnitude, variability, and temporal evolution of exceedances. 
 
-For sea‑level anomalies, Bayesian inference assigns high posterior probability to positive trends across stations despite 
-non‑significant frequentist tests, and predictive log‑score differences provide continuous evidence in favour of non‑stationary models. 
+Applications to Australian temperature extremes and sea level anomalies demonstrate that Bayesian posterior predictive verification maintains calibration and resolution under drift. 
 
-For temperature extremes, conditioning on physically motivated climate regimes improves probabilistic skill and tail 
-performance without loss of calibration.
+However, ETGS reveals that improvements in standard probabilistic scores do not necessarily correspond to improved representation of extremes. 
 
-The results show that verification based on posterior predictive distributions yields assessments that are relevant and compatible 
-under climate non‑stationarity. We outline an operational pathway integrating calibration, scorecards, and information-noise diagnostics, 
-consistent with current international verification practice.
+In the temperature case study, ETGS differences are predominantly positive, indicating degradation in tail structure at most stations, although improvements are observed in some regions. 
+
+This highlights a distinction between predictive accuracy and structural fidelity under climate nonstationarity.
 
 Data is available at Zenodo at this DOI: 10.5281/zenodo.19324137
